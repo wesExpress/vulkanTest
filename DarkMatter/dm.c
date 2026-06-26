@@ -17,6 +17,7 @@ void* dm_arena_alloc(dm_arena* arena, size_t size, size_t* offset)
 {
     if(arena->size + size >= arena->capacity) return NULL;
 
+    *offset = arena->size;
     arena->size += size;
     arena->current += size;
 
@@ -30,9 +31,12 @@ void* dm_arena_get_ptr(dm_arena arena, size_t offset)
 
 extern bool dm_window_create(dm_context* context, u16 width, u16 height, const char* title);
 extern void dm_window_destroy(dm_context* context);
+extern void dm_window_poll_events(dm_context* context);
 
-extern bool dm_renderer_init(dm_context* context, u16 width, u16 height);
+extern bool dm_renderer_init(dm_context* context);
 extern void dm_renderer_shutdown(dm_context* context);
+extern bool dm_renderer_begin_frame(dm_context* context);
+extern bool dm_renderer_end_frame(dm_context* context);
 
 // context
 bool dm_init(dm_context* context, u16 width, u16 height, const char* title, dm_context_flag flags, size_t memory_size)
@@ -40,11 +44,13 @@ bool dm_init(dm_context* context, u16 width, u16 height, const char* title, dm_c
     dm_arena_create(memory_size, &context->arena);
 
     if(!dm_window_create(context, width, height, title)) return false;
-    if(!dm_renderer_init(context, width, height))
+    if(!dm_renderer_init(context))
     {
         dm_window_destroy(context);
         return false;
     }
+
+    context->flags |= DM_CONTEXT_FLAG_IS_RUNNING;
 
     return true;
 }
@@ -55,4 +61,24 @@ void dm_shutdown(dm_context* context)
     dm_window_destroy(context);
 
     dm_arena_detroy(&context->arena);
+}
+
+bool dm_is_running(dm_context context)
+{
+    return context.flags & DM_CONTEXT_FLAG_IS_RUNNING;
+}
+
+void dm_update(dm_context* context)
+{
+    dm_window_poll_events(context);
+}
+
+bool dm_begin_render(dm_context* context)
+{
+    return dm_renderer_begin_frame(context);
+}
+
+bool dm_end_render(dm_context* context)
+{
+    return dm_renderer_end_frame(context);
 }
