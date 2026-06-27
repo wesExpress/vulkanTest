@@ -28,10 +28,16 @@ int main(void)
     dm_handle swapchain, pipe, vb_cpu, vb_gpu, ib_cpu, ib_gpu;
 
     dm_render_target_desc desc = {
-        .type=DM_RENDER_TARGET_TYPE_SWAPCHAIN
+        .type=DM_RENDER_TARGET_TYPE_SWAPCHAIN,
+        .color_attachment.load_op=DM_RENDER_ATTACHMENT_LOAD_OP_CLEAR,
+        .color_attachment.store_op=DM_RENDER_ATTACHMENT_STORE_OP_STORE,
+        .depth_attachment.load_op=DM_RENDER_ATTACHMENT_LOAD_OP_CLEAR,
+        .depth_attachment.store_op=DM_RENDER_ATTACHMENT_STORE_OP_DONT_CARE
     };
 
     if(!dm_renderer_create_render_target(&context, desc, &swapchain)) return 1;
+
+    swapchain.r_type = DM_RESOURCE_TYPE_SWAPCHAIN;
 
     dm_raster_shader vertex_shader = {
         .path="../assets/shaders/vertex.glsl",
@@ -102,12 +108,14 @@ int main(void)
 
         constants.t += 0.005f;
 
+#if 0
         vertices[0].pos[0] += constants.t;
         vertices[1].pos[0] += constants.t;
         vertices[2].pos[0] += constants.t;
-
+        
         dm_render_command_update_buffer(&context, vb_cpu, vertices, sizeof(vertices));
         dm_render_command_copy_buffer(&context, vb_cpu, vb_gpu);
+#endif
 
         if(!dm_begin_render(&context)) break;
 

@@ -31,7 +31,7 @@ void main()
     vertex v = vb.vertices[gl_VertexIndex];
 
     vec3 position = v.position;
-    //position.x += constants.t;
+    position.x += constants.t;
 
     vec3 color    = v.color; 
 

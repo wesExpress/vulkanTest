@@ -85,9 +85,15 @@ typedef struct dm_vulkan_buffer_t
 
 typedef struct dm_vulkan_render_target_t
 {
-    dm_render_target_type type;
+    dm_handle color_target; // ignored if swapchain
+    dm_handle depth_target; // ignored if swapchain
 
-    dm_handle target; // ignored if type is swapchain
+    VkAttachmentLoadOp  color_load_op;
+    VkAttachmentStoreOp color_store_op;
+    VkAttachmentLoadOp  depth_load_op;
+    VkAttachmentStoreOp depth_store_op;
+
+    dm_render_target_type type;
 } dm_vulkan_render_target;
 
 typedef struct dm_vulkan_pipeline_t
@@ -994,18 +1000,48 @@ bool dm_renderer_end_frame(dm_context* context)
 }
 
 // resources
+VkAttachmentLoadOp dm_vulkan_load_op_convert(dm_render_attachment_load_op op)
+{
+    switch(op)
+    {
+        case DM_RENDER_ATTACHMENT_LOAD_OP_LOAD:
+            return VK_ATTACHMENT_LOAD_OP_LOAD;
+        case DM_RENDER_ATTACHMENT_LOAD_OP_CLEAR: 
+            return VK_ATTACHMENT_LOAD_OP_CLEAR;
+        case DM_RENDER_ATTACHMENT_LOAD_OP_DONT_CARE: 
+            return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+
+        default:
+            LOG_ERROR("Unknown/unsupported load op");
+            return VK_ATTACHMENT_LOAD_OP_NONE_KHR;
+    }
+}
+
+VkAttachmentStoreOp dm_vulkan_store_op_convert(dm_render_attachment_store_op op)
+{
+    switch(op)
+    {
+        case DM_RENDER_ATTACHMENT_STORE_OP_STORE:
+            return VK_ATTACHMENT_STORE_OP_STORE;
+        case DM_RENDER_ATTACHMENT_STORE_OP_DONT_CARE:
+            return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+        default:
+            LOG_ERROR("Unknown/unsupported store op");
+            return VK_ATTACHMENT_STORE_OP_NONE;
+    }
+}
+
 bool dm_renderer_create_render_target(dm_context* context, dm_render_target_desc desc, dm_handle* handle)
 {
     dm_vulkan_renderer* renderer = dm_arena_get_ptr(context->arena, context->renderer.offset);
 
-    if(desc.type != DM_RENDER_TARGET_TYPE_SWAPCHAIN) 
-    { 
-        LOG_ERROR("Only swapchain render targets supported now.");
-        return false;
-    }
-
     dm_vulkan_render_target target = { 
-        .type=desc.type
+        .type=desc.type,
+        .color_load_op=dm_vulkan_load_op_convert(desc.color_attachment.load_op),
+        .color_store_op=dm_vulkan_store_op_convert(desc.color_attachment.store_op),
+        .depth_load_op=dm_vulkan_load_op_convert(desc.depth_attachment.load_op),
+        .depth_store_op=dm_vulkan_store_op_convert(desc.depth_attachment.store_op)
     };
 
     renderer->rts[renderer->rt_count] = target;
@@ -1334,6 +1370,8 @@ void dm_render_command_begin_rendering(dm_context *context, dm_handle handle, fl
     dm_vulkan_renderer *renderer = dm_arena_get_ptr(context->arena, context->renderer.offset);
     dm_vulkan_frame_data frame_data = renderer->frame_data[renderer->frame_index];
 
+    dm_vulkan_render_target target = renderer->rts[handle.index];
+
     VkImage     color_image = renderer->swapchain.images[renderer->swapchain.index].image;
     VkImageView color_view  = renderer->swapchain.images[renderer->swapchain.index].view;
     VkImage     depth_image = renderer->swapchain.depth_image.image;
@@ -1384,8 +1422,8 @@ void dm_render_command_begin_rendering(dm_context *context, dm_handle handle, fl
         .sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .imageView=color_view,
-        .loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp=VK_ATTACHMENT_STORE_OP_STORE,
+        .loadOp=target.color_load_op,
+        .storeOp=target.color_store_op,
         .clearValue.color.float32[0]=r,
         .clearValue.color.float32[1]=g,
         .clearValue.color.float32[2]=b,
@@ -1396,8 +1434,8 @@ void dm_render_command_begin_rendering(dm_context *context, dm_handle handle, fl
         .sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
         .imageView=depth_view,
-        .loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp=VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .loadOp=target.depth_load_op,
+        .storeOp=target.depth_store_op,
         .clearValue.depthStencil.depth=d
     };
     VkRenderingInfo render_info = {

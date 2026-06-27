@@ -63,6 +63,7 @@ typedef enum dm_pipeline_type_t
 typedef enum dm_resource_type_t
 {
     DM_RESOURCE_TYPE_INVALID,
+    DM_RESOURCE_TYPE_SWAPCHAIN,
     DM_RESOURCE_TYPE_RENDER_TARGET,
     DM_RESOURCE_TYPE_BUFFER,
     DM_RESOURCE_TYPE_SAMPLED_TEXTURE2D,
@@ -94,6 +95,35 @@ typedef struct dm_handle_t
     u32 index : 24;
 } dm_handle;
 
+typedef enum dm_render_target_flag_t
+{
+    DM_RENDER_TARGET_FLAG_COLOR = 1,
+    DM_RENDER_TARGET_FLAG_DEPTH = 2
+} dm_render_target_flag;
+
+typedef enum dm_renderattachment_load_op_t
+{
+    DM_RENDER_ATTACHMENT_LOAD_OP_INVALID,
+    DM_RENDER_ATTACHMENT_LOAD_OP_LOAD,
+    DM_RENDER_ATTACHMENT_LOAD_OP_CLEAR,
+    DM_RENDER_ATTACHMENT_LOAD_OP_DONT_CARE
+} dm_render_attachment_load_op;
+
+typedef enum dm_render_attachment_store_op_t
+{
+    DM_RENDER_ATTACHMENT_STORE_OP_INVALID,
+    DM_RENDER_ATTACHMENT_STORE_OP_STORE,
+    DM_RENDER_ATTACHMENT_STORE_OP_DONT_CARE
+} dm_render_attachment_store_op;
+
+typedef struct dm_render_attachment_desc_t
+{
+    dm_render_attachment_load_op  load_op;
+    dm_render_attachment_store_op store_op;
+
+    dm_handle handle; // ignored if swapchain
+} dm_render_attachment_desc;
+
 typedef enum dm_render_target_type_t
 {
     DM_RENDER_TARGET_TYPE_INVALID,
@@ -101,19 +131,13 @@ typedef enum dm_render_target_type_t
     DM_RENDER_TARGET_TYPE_CUSTOM
 } dm_render_target_type;
 
-typedef enum dm_render_target_flag_t
-{
-    DM_RENDER_TARGET_FLAG_COLOR = 1,
-    DM_RENDER_TARGET_FLAG_DEPTH = 2
-} dm_render_target_flag;
-
 typedef struct dm_render_target_desc_t
 {
-    dm_render_target_type type;
+    dm_render_attachment_desc color_attachment;
+    dm_render_attachment_desc depth_attachment;
 
-    // ignored if type is swapchain
-    dm_render_target_flag flags;
-    dm_handle             handle; 
+    dm_render_target_flag flags; // ignored if swapchain
+    dm_render_target_type type;
 } dm_render_target_desc;
 
 typedef enum dm_raster_shader_stage_t
