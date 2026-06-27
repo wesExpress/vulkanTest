@@ -7,7 +7,8 @@
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
 #include "vk_mem_alloc.h"
 
-#define DM_FRAMES_IN_FLIGHT     3
+#include <shaderc/shaderc.h>
+
 #define DM_SWAPCHAIN_MAX_IMAGES 5
 #define DM_SWAPCHAIN_FORMAT     VK_FORMAT_B8G8R8A8_SRGB
 #define DM_DEPTH_FORMAT         VK_FORMAT_D32_SFLOAT
@@ -67,6 +68,34 @@ typedef struct dm_vulkan_frame_data_t
     VkSemaphore     semaphore;
 } dm_vulkan_frame_data;
 
+typedef struct dm_vulkan_image_t
+{
+    VkImage       image;
+    VkImageView   view;
+    VmaAllocation allocation;
+} dm_vulkan_image;
+
+typedef struct dm_vulkan_buffer_t
+{
+    VkBuffer      buffer;
+    VkBufferView  view;
+    VmaAllocation allocation;
+    size_t size;
+} dm_vulkan_buffer;
+
+typedef struct dm_vulkan_render_target_t
+{
+    dm_render_target_type type;
+
+    dm_handle target; // ignored if type is swapchain
+} dm_vulkan_render_target;
+
+typedef struct dm_vulkan_pipeline_t
+{
+    VkPipeline pipeline;
+    VkPipelineLayout layout;
+} dm_vulkan_pipeline;
+
 typedef struct dm_vulkan_renderer_t
 {
     VkInstance       instance;
@@ -83,6 +112,15 @@ typedef struct dm_vulkan_renderer_t
     u64         timeline_value;
 
     u32 frame_index;
+
+    // resources
+    dm_vulkan_image images[DM_MAX_TEXTURES * DM_FRAMES_IN_FLIGHT];
+    dm_vulkan_buffer buffers[DM_MAX_BUFFERS * 3 * DM_FRAMES_IN_FLIGHT]; // 3 = CPU,GPU,texture
+    u32 image_count, buffer_count;
+
+    dm_vulkan_pipeline      pipes[DM_MAX_RASTER_PIPES];
+    dm_vulkan_render_target rts[DM_MAX_TEXTURES];
+    u32 pipe_count, rt_count;
 } dm_vulkan_renderer;
 
 #ifdef DM_DEBUG
@@ -793,6 +831,25 @@ void dm_renderer_shutdown(dm_context* context)
 
     vkDeviceWaitIdle(gpu.device);
 
+    // resources
+    for(u32 i=0; i<renderer->pipe_count; i++)
+    {
+        vkDestroyPipelineLayout(gpu.device, renderer->pipes[i].layout, NULL);
+        vkDestroyPipeline(gpu.device, renderer->pipes[i].pipeline, NULL);
+    }
+
+    for(u32 i=0; i<renderer->buffer_count; i++)
+    {
+        vmaDestroyBuffer(renderer->allocator, renderer->buffers[i].buffer, renderer->buffers[i].allocation);
+        vkDestroyBufferView(gpu.device, renderer->buffers[i].view, NULL);
+    }
+
+    for(u32 i=0; i<renderer->image_count; i++)
+    {
+        vmaDestroyImage(renderer->allocator, renderer->images[i].image, renderer->images[i].allocation);
+        vkDestroyImageView(gpu.device, renderer->images[i].view, NULL);
+    }
+
     vkDestroyCommandPool(gpu.device, renderer->single_use_pool, NULL);
     for(u32 i=0; i<DM_FRAMES_IN_FLIGHT; i++)
     {
@@ -805,8 +862,8 @@ void dm_renderer_shutdown(dm_context* context)
     vkDestroySemaphore(gpu.device, renderer->timeline_semaphore, NULL);
 
     vkDestroySurfaceKHR(renderer->instance, surface.surface, NULL);
-    vkDestroyDevice(gpu.device, NULL);
     vmaDestroyAllocator(renderer->allocator);
+    vkDestroyDevice(gpu.device, NULL);
     vkDestroyInstance(renderer->instance, NULL);
 
     volkFinalize();
@@ -846,73 +903,7 @@ bool dm_renderer_begin_frame(dm_context* context)
     };
     vkBeginCommandBuffer(frame_data.gfx_cmd, &cmd_begin);
 
-    VkImageMemoryBarrier2 barriers[] = {
-        {
-            .sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask=VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .srcAccessMask=0,
-            .dstStageMask=VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .dstAccessMask=VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            .oldLayout=VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .image=image.image,
-            .subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT,
-            .subresourceRange.levelCount=1,
-            .subresourceRange.layerCount=1
-        },
-        {
-            .sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask=VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-            .srcAccessMask=VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            .dstStageMask=VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-            .dstAccessMask=VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            .oldLayout=VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-            .image=swapchain.depth_image.image,
-            .subresourceRange.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT,
-            .subresourceRange.levelCount=1,
-            .subresourceRange.layerCount=1
-        }
-    };
-    VkDependencyInfo dep_info = {
-        .sType=VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount=2,
-        .pImageMemoryBarriers=barriers
-    };
-    vkCmdPipelineBarrier2(frame_data.gfx_cmd, &dep_info);
-
-    // attachments
-    VkRenderingAttachmentInfo color_info = {
-        .sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .imageView=image.view,
-        .loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp=VK_ATTACHMENT_STORE_OP_STORE,
-        .clearValue.color.float32[0] = 0.5f,
-        .clearValue.color.float32[1] = 0.2f,
-        .clearValue.color.float32[2] = 0.2f,
-        .clearValue.color.float32[3] = 1.f,
-    };
-
-    VkRenderingAttachmentInfo depth_info = {
-        .sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-        .imageView=swapchain.depth_image.view,
-        .loadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        .storeOp=VK_ATTACHMENT_STORE_OP_STORE,
-        .clearValue.depthStencil.depth = 1.f
-    };
-    VkRenderingInfo render_info = {
-        .sType=VK_STRUCTURE_TYPE_RENDERING_INFO,
-        .colorAttachmentCount=1,
-        .pColorAttachments=&color_info,
-        .pDepthAttachment=&depth_info,
-        .layerCount=1,
-        .renderArea.extent.width=swapchain.width,
-        .renderArea.extent.height=swapchain.height
-    };
-    vkCmdBeginRendering(frame_data.gfx_cmd, &render_info);
-
+    //
     renderer->swapchain = swapchain;
     
     return true;
@@ -925,8 +916,6 @@ bool dm_renderer_end_frame(dm_context* context)
     dm_vulkan_gpu gpu = renderer->gpu;
     dm_vulkan_frame_data frame_data = renderer->frame_data[renderer->frame_index];
     dm_vulkan_swapchain_image image = renderer->swapchain.images[renderer->swapchain.index];
-
-    vkCmdEndRendering(frame_data.gfx_cmd);
 
     VkImageMemoryBarrier2 present_barrier = {
         .sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -1003,3 +992,579 @@ bool dm_renderer_end_frame(dm_context* context)
 
     return true;
 }
+
+// resources
+bool dm_renderer_create_render_target(dm_context* context, dm_render_target_desc desc, dm_handle* handle)
+{
+    dm_vulkan_renderer* renderer = dm_arena_get_ptr(context->arena, context->renderer.offset);
+
+    if(desc.type != DM_RENDER_TARGET_TYPE_SWAPCHAIN) 
+    { 
+        LOG_ERROR("Only swapchain render targets supported now.");
+        return false;
+    }
+
+    dm_vulkan_render_target target = { 
+        .type=desc.type
+    };
+
+    renderer->rts[renderer->rt_count] = target;
+    handle->index = renderer->rt_count++;
+    handle->r_type = DM_RESOURCE_TYPE_RENDER_TARGET;
+
+    return true;
+}
+
+VkShaderModule dm_vulkan_create_shader_module(dm_vulkan_gpu gpu, const char *path, const char *entry, shaderc_shader_kind kind)
+{
+    VkShaderModule module = VK_NULL_HANDLE;
+
+    size_t file_size;
+    void *file_data = dm_read_bytes(path, &file_size);
+    if(!file_data) return VK_NULL_HANDLE;
+
+    shaderc_compiler_t compiler       = shaderc_compiler_initialize();
+    shaderc_compile_options_t options = shaderc_compile_options_initialize();
+    shaderc_compilation_result_t result;
+
+    shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_4);
+    shaderc_compile_options_set_target_spirv(options, shaderc_spirv_version_1_6);
+#ifdef DM_DEBUG
+    shaderc_compile_options_set_optimization_level(options, shaderc_optimization_level_zero);
+#else
+    shaderc_compile_options_set_optimization_level(options, shaderc_optimization_level_performance);
+#endif
+
+    result = shaderc_compile_into_spv(compiler, file_data, file_size, kind, path, entry, options);
+    if(shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success)
+    {
+        LOG_ERROR("Could not compile shader \'%s\'", path);
+        LOG_ERROR("%s", shaderc_result_get_error_message(result));
+        return VK_NULL_HANDLE;
+    }
+    free(file_data);
+
+    VkShaderModuleCreateInfo info = {
+        .sType=VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize=shaderc_result_get_length(result),
+        .pCode=(u32*)shaderc_result_get_bytes(result)
+    };
+
+    if(vkCreateShaderModule(gpu.device, &info, NULL, &module) != VK_SUCCESS)
+    {
+        LOG_ERROR("vkCreateShaderModule failed");
+        return VK_NULL_HANDLE;
+    }
+
+    return module;
+}
+
+bool dm_renderer_create_raster_pipeline(dm_context* context, dm_raster_pipe_desc desc, dm_handle* handle)
+{
+    dm_vulkan_renderer* renderer = dm_arena_get_ptr(context->arena, context->renderer.offset);
+
+    dm_vulkan_pipeline pipe = { 0 };
+
+    dm_raster_shader vertex_shader = desc.shaders[DM_RASTER_SHADER_STAGE_VERTEX];
+    dm_raster_shader fragment_shader = desc.shaders[DM_RASTER_SHADER_STAGE_FRAGMENT];
+
+    VkShaderModule vertex_module   = dm_vulkan_create_shader_module(renderer->gpu, vertex_shader.path, vertex_shader.entry, shaderc_vertex_shader);
+    if(vertex_module == VK_NULL_HANDLE)
+    {
+        LOG_ERROR("Could not create vertex shader module");
+        return false;
+    }
+    VkShaderModule fragment_module = dm_vulkan_create_shader_module(renderer->gpu, fragment_shader.path, fragment_shader.entry, shaderc_fragment_shader);
+    if(fragment_module == VK_NULL_HANDLE)
+    {
+        LOG_ERROR("Could not create fragment shader module");
+        return false;
+    }
+
+    VkPipelineShaderStageCreateInfo vertex_info = {
+        .sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .module=vertex_module,
+        .stage=VK_SHADER_STAGE_VERTEX_BIT,
+        .pName=vertex_shader.entry
+    };
+    VkPipelineShaderStageCreateInfo fragment_info = {
+        .sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .module=fragment_module,
+        .stage=VK_SHADER_STAGE_FRAGMENT_BIT,
+        .pName=fragment_shader.entry
+    };
+    VkPipelineShaderStageCreateInfo shader_info[] = {
+        vertex_info,
+        fragment_info
+    };
+
+    VkPipelineVertexInputStateCreateInfo vertex_input_info = {
+        .sType=VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+    };
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly_info = {
+        .sType=VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+    };
+
+    VkPipelineDepthStencilStateCreateInfo depth_info = {
+        .sType=VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable=VK_TRUE,
+        .depthWriteEnable=VK_TRUE,
+        .depthCompareOp=VK_COMPARE_OP_LESS,
+        .stencilTestEnable=VK_FALSE,
+    };
+
+    VkPipelineViewportStateCreateInfo viewport_info = {
+        .sType=VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount=1,
+        .scissorCount=1
+    };
+
+    VkPipelineRasterizationStateCreateInfo raster_info = {
+        .sType=VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode=VK_POLYGON_MODE_FILL,
+        .cullMode=VK_CULL_MODE_BACK_BIT,
+        .frontFace=VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .lineWidth=1.f
+    };
+
+    VkPipelineMultisampleStateCreateInfo multi_sample_info = {
+        .sType=VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples=VK_SAMPLE_COUNT_1_BIT
+    };
+
+    VkPipelineColorBlendAttachmentState color_attachment_info = {
+        .blendEnable=VK_FALSE,
+        .colorWriteMask=VK_COLOR_COMPONENT_R_BIT | 
+            VK_COLOR_COMPONENT_G_BIT | 
+            VK_COLOR_COMPONENT_B_BIT |
+            VK_COLOR_COMPONENT_A_BIT
+    };
+
+    VkPipelineColorBlendStateCreateInfo color_blend_info = {
+        .sType=VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount=1,
+        .pAttachments=&color_attachment_info
+    };
+
+    VkDynamicState dynamic_state[] = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+    VkPipelineDynamicStateCreateInfo dynamic_state_info = {
+        .sType=VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount=2,
+        .pDynamicStates=dynamic_state
+    };
+
+    VkPipelineRenderingCreateInfo render_info = {
+        .sType=VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .colorAttachmentCount=1,
+        .pColorAttachmentFormats=&renderer->swapchain.format,
+        .depthAttachmentFormat=renderer->swapchain.depth_format
+    };
+
+    size_t push_size = desc.push_constant_size > 0 ? desc.push_constant_size : renderer->gpu.properties.limits.maxPushConstantsSize;
+
+    VkPushConstantRange push_range = {
+        .stageFlags=VK_SHADER_STAGE_ALL_GRAPHICS,
+        .size=push_size
+    };
+
+    VkPipelineLayoutCreateInfo layout_info = {
+        .sType=VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .pushConstantRangeCount=1,
+        .pPushConstantRanges=&push_range,
+    };
+
+    if(vkCreatePipelineLayout(renderer->gpu.device, &layout_info, NULL, &pipe.layout) != VK_SUCCESS)
+    {
+        LOG_ERROR("vkCreatePipelineLayout failed");
+        return false;
+    }
+
+    VkGraphicsPipelineCreateInfo pipeline_info = {
+        .sType=VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount=2,
+        .pStages=shader_info,
+        .pVertexInputState=&vertex_input_info,
+        .pInputAssemblyState=&input_assembly_info,
+        .pRasterizationState=&raster_info,
+        .pMultisampleState=&multi_sample_info,
+        .pDepthStencilState=&depth_info,
+        .pColorBlendState=&color_blend_info,
+        .pDynamicState=&dynamic_state_info,
+        .pViewportState=&viewport_info,
+        .pNext=&render_info,
+        .layout=pipe.layout
+    };
+
+    if(vkCreateGraphicsPipelines(renderer->gpu.device, NULL, 1, &pipeline_info, NULL, &pipe.pipeline) != VK_SUCCESS)
+    {
+        LOG_ERROR("vkCreateGraphicsPipelines failed");
+        return false;
+    }
+
+    //
+    vkDestroyShaderModule(renderer->gpu.device, vertex_module, NULL);
+    vkDestroyShaderModule(renderer->gpu.device, fragment_module, NULL);
+
+    //
+    renderer->pipes[renderer->pipe_count] = pipe;
+    handle->index = renderer->pipe_count++;
+    handle->p_type = DM_PIPELINE_TYPE_RASTER;
+
+    return true;
+}
+
+bool dm_vulkan_copy_to_buffer(VmaAllocator allocator, dm_vulkan_buffer buffer, void *data, size_t size)
+{
+    void* buffer_ptr = NULL;
+    if(vmaMapMemory(allocator, buffer.allocation, &buffer_ptr) != VK_SUCCESS)
+    {
+        LOG_ERROR("vmaMapMemory failed");
+        buffer_ptr = NULL;
+        return false;
+    }
+    memcpy(buffer_ptr, data, size);
+    vmaUnmapMemory(allocator, buffer.allocation);
+
+    buffer_ptr = NULL;
+
+    return true;
+}
+
+bool dm_renderer_create_buffer(dm_context* context, dm_buffer_desc desc, dm_handle *handle)
+{
+    dm_vulkan_renderer *renderer = dm_arena_get_ptr(context->arena, context->renderer.offset);
+
+    dm_vulkan_buffer buffer = { 0 };
+
+    VkBufferUsageFlagBits usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    VmaAllocationCreateFlags alloc_flags = 0;
+    VmaMemoryUsage           alloc_usage = 0;
+
+    switch(desc.type)
+    {
+        case DM_BUFFER_TYPE_VERTEX:
+            usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+            break;
+        case DM_BUFFER_TYPE_INDEX:
+            usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        case DM_BUFFER_TYPE_STORAGE:
+            break;
+
+        default:
+            LOG_ERROR("Unknown/unsupported buffer type");
+            return false;
+    }
+
+    switch(desc.reside)
+    {
+        case DM_BUFFER_RESIDE_CPU:
+            usage       |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+            alloc_flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+            alloc_flags |= VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT;
+            alloc_flags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            alloc_usage |= VMA_MEMORY_USAGE_CPU_TO_GPU;
+            break;
+        case DM_BUFFER_RESIDE_GPU:
+            usage       |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            alloc_usage |= VMA_MEMORY_USAGE_GPU_ONLY;
+            break;
+
+        default:
+            LOG_ERROR("Unknown/unsupported buffer reside");
+            return false;
+    }
+
+    usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+
+    VkBufferCreateInfo buffer_info = {
+        .sType=VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size=desc.size,
+        .sharingMode=VK_SHARING_MODE_EXCLUSIVE,
+        .usage=usage
+    };
+
+    VmaAllocationCreateInfo alloc_info = {
+        .flags=alloc_flags,
+        .usage=alloc_usage
+    };
+
+    if(vmaCreateBuffer(renderer->allocator, &buffer_info, &alloc_info, &buffer.buffer, &buffer.allocation, NULL) != VK_SUCCESS)
+    {
+        LOG_ERROR("vmaCreateBuffer failed");
+        return false;
+    }
+
+    if(desc.reside==DM_BUFFER_RESIDE_CPU)
+    {
+        if(!dm_vulkan_copy_to_buffer(renderer->allocator, buffer, desc.data, desc.size)) return false;
+    }
+
+    buffer.size = desc.size;
+
+    //
+    renderer->buffers[renderer->buffer_count] = buffer;
+    handle->r_type = DM_RESOURCE_TYPE_BUFFER;
+    handle->index  = renderer->buffer_count++;
+
+    return true;
+}
+
+u64 dm_renderer_get_buffer_address(dm_context *context, dm_handle handle)
+{
+    dm_vulkan_renderer *renderer = dm_arena_get_ptr(context->arena, context->renderer.offset);
+
+    dm_vulkan_buffer buffer = renderer->buffers[handle.index];
+
+    VkBufferDeviceAddressInfo info = {
+        .sType=VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+        .buffer=buffer.buffer
+    };
+
+    return vkGetBufferDeviceAddress(renderer->gpu.device, &info);
+}
+
+// commands
+void dm_render_command_begin_rendering(dm_context *context, dm_handle handle, float r, float g, float b, float a, float d)
+{
+    dm_vulkan_renderer *renderer = dm_arena_get_ptr(context->arena, context->renderer.offset);
+    dm_vulkan_frame_data frame_data = renderer->frame_data[renderer->frame_index];
+
+    VkImage     color_image = renderer->swapchain.images[renderer->swapchain.index].image;
+    VkImageView color_view  = renderer->swapchain.images[renderer->swapchain.index].view;
+    VkImage     depth_image = renderer->swapchain.depth_image.image;
+    VkImageView depth_view  = renderer->swapchain.depth_image.view;
+
+    VkImageMemoryBarrier2 color_barrier = {
+        .sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask=VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask=0,
+        .dstStageMask=VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask=VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .oldLayout=VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .image=color_image,
+        .subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT,
+        .subresourceRange.levelCount=1,
+        .subresourceRange.layerCount=1
+    };
+
+    VkImageMemoryBarrier2 depth_barrier = {
+        .sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask=VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+        .srcAccessMask=VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .dstStageMask=VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+        .dstAccessMask=VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .oldLayout=VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+        .image=depth_image,
+        .subresourceRange.aspectMask=VK_IMAGE_ASPECT_DEPTH_BIT,
+        .subresourceRange.levelCount=1,
+        .subresourceRange.layerCount=1
+    };
+
+    VkImageMemoryBarrier2 barriers[] = {
+        color_barrier,
+        depth_barrier
+    };
+
+    VkDependencyInfo dep_info = {
+        .sType=VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount=2,
+        .pImageMemoryBarriers=barriers
+    };
+    vkCmdPipelineBarrier2(frame_data.gfx_cmd, &dep_info);
+
+    // attachments
+    VkRenderingAttachmentInfo color_info = {
+        .sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .imageView=color_view,
+        .loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp=VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue.color.float32[0]=r,
+        .clearValue.color.float32[1]=g,
+        .clearValue.color.float32[2]=b,
+        .clearValue.color.float32[3]=a,
+    };
+
+    VkRenderingAttachmentInfo depth_info = {
+        .sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+        .imageView=depth_view,
+        .loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp=VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .clearValue.depthStencil.depth=d
+    };
+    VkRenderingInfo render_info = {
+        .sType=VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .colorAttachmentCount=1,
+        .pColorAttachments=&color_info,
+        .pDepthAttachment=&depth_info,
+        .layerCount=1,
+        .renderArea.extent.width=renderer->swapchain.width,
+        .renderArea.extent.height=renderer->swapchain.height
+    };
+    vkCmdBeginRendering(frame_data.gfx_cmd, &render_info);
+
+    VkViewport viewport = {
+        .width=renderer->swapchain.width,
+        .height=renderer->swapchain.height
+    };
+
+    VkRect2D scissor = {
+        .extent.width=renderer->swapchain.width,
+        .extent.height=renderer->swapchain.height
+    };
+
+    vkCmdSetViewport(frame_data.gfx_cmd, 0,1, &viewport);
+    vkCmdSetScissor(frame_data.gfx_cmd, 0, 1, &scissor);
+}
+
+void dm_render_command_end_rendering(dm_context *context, dm_handle handle)
+{
+    dm_vulkan_renderer  *renderer   = dm_arena_get_ptr(context->arena, context->renderer.offset);
+    dm_vulkan_frame_data frame_data = renderer->frame_data[renderer->frame_index];
+
+    vkCmdEndRendering(frame_data.gfx_cmd);
+}
+
+void dm_render_command_bind_pipeline(dm_context *context, dm_handle handle)
+{
+    dm_vulkan_renderer  *renderer   = dm_arena_get_ptr(context->arena, context->renderer.offset);
+    dm_vulkan_frame_data frame_data = renderer->frame_data[renderer->frame_index];
+
+    dm_vulkan_pipeline pipeline = renderer->pipes[handle.index];
+
+    VkPipelineBindPoint bind_point;
+
+    switch(handle.p_type)
+    {
+        case DM_PIPELINE_TYPE_RASTER:
+            bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
+            break;
+        case DM_PIPELINE_TYPE_COMPUTE:
+            bind_point = VK_PIPELINE_BIND_POINT_COMPUTE;
+            break;
+        case DM_PIPELINE_TYPE_RAY_TRACE:
+            bind_point = VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR;
+            break;
+
+        default:
+            LOG_ERROR("Unknown/unsupported pipeline type");
+            return;
+    }
+
+    vkCmdBindPipeline(frame_data.gfx_cmd, bind_point, pipeline.pipeline);
+}
+
+void dm_render_command_bind_index_buffer(dm_context *context, dm_handle handle, size_t offset)
+{
+    dm_vulkan_renderer  *renderer   = dm_arena_get_ptr(context->arena, context->renderer.offset);
+    dm_vulkan_frame_data frame_data = renderer->frame_data[renderer->frame_index];
+
+    dm_vulkan_buffer buffer = renderer->buffers[handle.index];
+
+    vkCmdBindIndexBuffer(frame_data.gfx_cmd, buffer.buffer, offset, VK_INDEX_TYPE_UINT32);
+}
+
+void dm_render_command_push_constants(dm_context *context, dm_handle handle, void *data, size_t size)
+{
+    dm_vulkan_renderer  *renderer   = dm_arena_get_ptr(context->arena, context->renderer.offset);
+    dm_vulkan_frame_data frame_data = renderer->frame_data[renderer->frame_index];
+
+    dm_vulkan_pipeline pipeline = renderer->pipes[handle.index];
+
+    VkShaderStageFlags stage;
+    switch(handle.p_type)
+    {
+        case DM_PIPELINE_TYPE_RASTER:
+            stage = VK_SHADER_STAGE_ALL_GRAPHICS;
+            break;
+        case DM_PIPELINE_TYPE_COMPUTE:
+            stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            break;
+        case DM_PIPELINE_TYPE_RAY_TRACE:
+            stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
+            break;
+
+        default:
+            LOG_ERROR("Unknown/unsupported pipeline bind point");
+            return;
+    }
+
+    vkCmdPushConstants(frame_data.gfx_cmd, pipeline.layout, stage, 0, size, data);
+}
+
+void dm_render_command_draw(dm_context *context, u32 index_count)
+{
+    dm_vulkan_renderer  *renderer   = dm_arena_get_ptr(context->arena, context->renderer.offset);
+    dm_vulkan_frame_data frame_data = renderer->frame_data[renderer->frame_index];
+
+    vkCmdDrawIndexed(frame_data.gfx_cmd, index_count, 1, 0, 0, 0);
+}
+
+void dm_render_command_update_buffer(dm_context *context, dm_handle handle, void *data, size_t size)
+{
+    dm_vulkan_renderer  *renderer   = dm_arena_get_ptr(context->arena, context->renderer.offset);
+
+    dm_vulkan_buffer buffer = renderer->buffers[handle.index];
+
+    dm_vulkan_copy_to_buffer(renderer->allocator, buffer, data, size);
+}
+
+void dm_render_command_copy_buffer(dm_context *context, dm_handle src, dm_handle dst)
+{
+    dm_vulkan_renderer  *renderer   = dm_arena_get_ptr(context->arena, context->renderer.offset);
+
+    dm_vulkan_buffer src_buffer = renderer->buffers[src.index];
+    dm_vulkan_buffer dst_buffer = renderer->buffers[dst.index];
+
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+
+    VkCommandBufferAllocateInfo cmd_alloc = {
+        .sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandBufferCount=1,
+        .commandPool=renderer->single_use_pool,
+        .level=VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+    };
+
+    vkAllocateCommandBuffers(renderer->gpu.device, &cmd_alloc, &cmd);
+
+    VkCommandBufferBeginInfo begin_info = {
+        .sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+    };
+
+    VkBufferCopy2 region_info = {
+        .sType=VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+        .size=src_buffer.size
+    };
+
+    VkCopyBufferInfo2 copy_info = {
+        .sType=VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+        .srcBuffer=src_buffer.buffer,
+        .dstBuffer=dst_buffer.buffer,
+        .regionCount=1,
+        .pRegions=&region_info
+    };
+
+    vkBeginCommandBuffer(cmd, &begin_info);
+    vkCmdCopyBuffer2(cmd, &copy_info);
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo submit_info = {
+        .sType=VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount=1,
+        .pCommandBuffers=&cmd
+    };
+
+    vkQueueSubmit(renderer->gpu.gfx_queue, 1, &submit_info, NULL);
+    vkQueueWaitIdle(renderer->gpu.gfx_queue);
+    vkFreeCommandBuffers(renderer->gpu.device, renderer->single_use_pool, 1, &cmd);
+}
+

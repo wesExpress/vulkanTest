@@ -82,3 +82,36 @@ bool dm_end_render(dm_context* context)
 {
     return dm_renderer_end_frame(context);
 }
+
+void* dm_read_bytes(const char *path, size_t *size)
+{
+    FILE *fp;
+    void* data = NULL;
+
+    fp = fopen(path, "rb");
+    if(fp)
+    {
+        fseek(fp, 0, SEEK_END);
+        *size = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        
+        data = malloc(*size);
+        
+        size_t t = fread(data, *size, 1, fp);
+        char d[512];
+        memcpy(d, data, 512);
+        if(t!=1) 
+        {
+            LOG_ERROR("Something bad happened with fread");
+            return NULL;
+        }
+        
+        fclose(fp);
+    }
+    else
+    {
+        LOG_ERROR("Could not open file: %s", path);
+    }
+
+    return data;
+}

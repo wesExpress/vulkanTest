@@ -7,11 +7,11 @@ project(DarkMatter)
 
 set(SOURCES dm.c dm_glfw_window.c dm_vulkan_renderer.c vk_mem_alloc.cpp)
 
-find_package(Vulkan REQUIRED COMPONENTS volk)
+find_package(Vulkan REQUIRED COMPONENTS volk shaderc_combined)
 
 add_subdirectory(lib/glfw)
 
 add_library(${PROJECT_NAME} STATIC ${SOURCES})
 
 target_include_directories(${PROJECT_NAME} PUBLIC lib/ lib/glfw/include)
-target_link_libraries(${PROJECT_NAME} PUBLIC glfw Vulkan::Vulkan Vulkan::volk)
+target_link_libraries(${PROJECT_NAME} PUBLIC glfw Vulkan::Vulkan Vulkan::volk shaderc_combined SPIRV-Tools SPIRV-Tools-opt glslang)
