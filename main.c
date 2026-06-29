@@ -1,5 +1,8 @@
 #include "DarkMatter/dm.h"
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image/stb_image.h"
+
 #define SCREEN_WIDTH  640
 #define SCREEN_HEIGHT 360
 
@@ -15,6 +18,32 @@ typedef struct push_constants_t
     float t;
 } push_constants;
 
+dm_handle create_texture(dm_context *context, const char *path)
+{
+    dm_handle handle = { 0 };
+
+    int width, height, n_channels;
+    void* data = stbi_load(path, &width, &height, &n_channels, 4);
+    if(!data)
+    {
+        LOG_ERROR("Could not load texture");
+        return handle;
+    }
+
+    dm_texture2d_desc texture_desc = {
+        .data=data,
+        .width=width,
+        .height=height,
+        .size=width*height*n_channels,
+        .type=DM_TEXTURE2D_TYPE_SAMPLED
+    };
+
+    if(!dm_renderer_create_texture(context, texture_desc, &handle)) return (dm_handle){ 0 };
+    stbi_image_free(data);
+
+    return handle;
+}
+
 int main(void)
 {
     dm_context context = { 0 };
@@ -26,6 +55,7 @@ int main(void)
     }
 
     dm_handle swapchain, pipe, vb_cpu, vb_gpu, ib_cpu, ib_gpu;
+    dm_handle texture;
 
     dm_render_target_desc desc = {
         .type=DM_RENDER_TARGET_TYPE_SWAPCHAIN,
@@ -37,14 +67,12 @@ int main(void)
 
     if(!dm_renderer_create_render_target(&context, desc, &swapchain)) return 1;
 
-    swapchain.r_type = DM_RESOURCE_TYPE_SWAPCHAIN;
-
     dm_raster_shader vertex_shader = {
-        .path="../assets/shaders/vertex.glsl",
+        .path="../../assets/shaders/vertex.glsl",
         .entry="main"
     };
     dm_raster_shader fragment_shader = {
-        .path="../assets/shaders/fragment.glsl",
+        .path="../../assets/shaders/fragment.glsl",
         .entry="main"
     };
 
@@ -97,6 +125,9 @@ int main(void)
     dm_render_command_copy_buffer(&context, vb_cpu, vb_gpu);
     dm_render_command_copy_buffer(&context, ib_cpu, ib_gpu);
 
+    texture = create_texture(&context, "../../assets/textures/awesomeface.png");
+    if(texture.r_type==DM_RESOURCE_TYPE_INVALID) return 1;
+
     push_constants constants = { 
         .vb_address=dm_renderer_get_buffer_address(&context, vb_gpu)
     };
@@ -123,7 +154,7 @@ int main(void)
                 dm_render_command_bind_pipeline(&context, pipe);
                 dm_render_command_push_constants(&context, pipe, &constants, sizeof(constants));
                 dm_render_command_bind_index_buffer(&context, ib_gpu, 0);
-                dm_render_command_draw(&context, 3); 
+                dm_render_command_draw(&context, 3, 1); 
             dm_render_command_end_rendering(&context, swapchain);
 
         if(!dm_end_render(&context))   break;
