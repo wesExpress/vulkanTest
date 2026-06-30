@@ -77,14 +77,22 @@ int main(void)
         .texture_count=1
     };
 
-    if(!dm_renderer_create_descriptor_heap(&context, heap_desc, &heap)) return 1;
+    if(!dm_renderer_create_descriptor_heap(&context, heap_desc, &heap)) 
+    {
+        LOG_FATAL("Creating resource heap failed");
+        return 1;
+    }
 
     heap_desc.type = DM_DESCRIPTOR_HEAP_TYPE_SAMPLER;
     heap_desc.buffer_count = 0;
     heap_desc.texture_count = 0;
     heap_desc.sampler_count = 1;
 
-    if(!dm_renderer_create_descriptor_heap(&context, heap_desc, &sampler_heap)) return 1;
+    if(!dm_renderer_create_descriptor_heap(&context, heap_desc, &sampler_heap))
+    {
+        LOG_FATAL("Creating sampler heap failed");
+        return 1;
+    }
 
     // raster pipe
     dm_raster_shader vertex_shader = {
@@ -168,8 +176,8 @@ int main(void)
 
     // descriptors
     if(!dm_renderer_upload_resource_to_heap(&context, heap, &vb_gpu))  return 1;
-    if(!dm_renderer_upload_resource_to_heap(&context, heap, &ib_gpu))  return 1;
-    if(!dm_renderer_upload_resource_to_heap(&context, heap, &texture)) return 1;
+    //if(!dm_renderer_upload_resource_to_heap(&context, heap, &ib_gpu))  return 1;
+    //if(!dm_renderer_upload_resource_to_heap(&context, heap, &texture)) return 1;
 
     /*
      */
