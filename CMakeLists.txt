@@ -4,7 +4,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 project(vulkanTest)
 
-add_subdirectory(DarkMatter)
+add_subdirectory(lib/DarkMatter)
 
 set(SOURCES main.c)
 

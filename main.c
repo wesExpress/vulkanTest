@@ -54,9 +54,12 @@ int main(void)
         return 1;
     }
 
-    dm_handle swapchain, pipe, vb_cpu, vb_gpu, ib_cpu, ib_gpu;
-    dm_handle texture;
+    dm_handle swapchain, pipe, vb_cpu, vb_gpu, ib_cpu, ib_gpu, push_data_cpu, push_data_gpu;
+    dm_handle texture, heap, sampler_heap;
 
+    push_constants constants = { 0 };
+
+    // render target
     dm_render_target_desc desc = {
         .type=DM_RENDER_TARGET_TYPE_SWAPCHAIN,
         .color_attachment.load_op=DM_RENDER_ATTACHMENT_LOAD_OP_CLEAR,
@@ -67,6 +70,23 @@ int main(void)
 
     if(!dm_renderer_create_render_target(&context, desc, &swapchain)) return 1;
 
+    // descriptor heaps
+    dm_descriptor_heap_desc heap_desc = {
+        .type=DM_DESCRIPTOR_HEAP_TYPE_RESOURCE,
+        .buffer_count=2,
+        .texture_count=1
+    };
+
+    if(!dm_renderer_create_descriptor_heap(&context, heap_desc, &heap)) return 1;
+
+    heap_desc.type = DM_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+    heap_desc.buffer_count = 0;
+    heap_desc.texture_count = 0;
+    heap_desc.sampler_count = 1;
+
+    if(!dm_renderer_create_descriptor_heap(&context, heap_desc, &sampler_heap)) return 1;
+
+    // raster pipe
     dm_raster_shader vertex_shader = {
         .path="../../assets/shaders/vertex.glsl",
         .entry="main"
@@ -86,6 +106,7 @@ int main(void)
 
     if(!dm_renderer_create_raster_pipeline(&context, pipe_desc, &pipe)) return 1;
 
+    // vertex and index buffer
     vertex vertices[] = {
         { { -0.5f,-0.5f,0.f }, { 1,0,0 } },
         { { 0.5f,-0.5f,0.f }, { 0,1,0 } },
@@ -97,12 +118,13 @@ int main(void)
         .stride=sizeof(vertex),
         .type=DM_BUFFER_TYPE_VERTEX,
         .reside=DM_BUFFER_RESIDE_CPU,
-        .data=vertices
+        .data=vertices,
     };
 
     if(!dm_renderer_create_buffer(&context, buffer_desc, &vb_cpu)) return 1;
 
     buffer_desc.reside = DM_BUFFER_RESIDE_GPU;
+    buffer_desc.data   = NULL;
     if(!dm_renderer_create_buffer(&context, buffer_desc, &vb_gpu)) return 1;
 
     u32 indices[] = {
@@ -114,23 +136,44 @@ int main(void)
         .stride=sizeof(u32),
         .type=DM_BUFFER_TYPE_INDEX,
         .reside=DM_BUFFER_RESIDE_CPU,
-        .data=indices
+        .data=indices,
     };
 
     if(!dm_renderer_create_buffer(&context, index_desc, &ib_cpu)) return 1;
 
     index_desc.reside = DM_BUFFER_RESIDE_GPU;
+    index_desc.data   = NULL;
     if(!dm_renderer_create_buffer(&context, index_desc, &ib_gpu)) return 1;
 
     dm_render_command_copy_buffer(&context, vb_cpu, vb_gpu);
     dm_render_command_copy_buffer(&context, ib_cpu, ib_gpu);
 
+    dm_buffer_desc push_desc = {
+        .type=DM_BUFFER_TYPE_STORAGE,
+        .reside=DM_BUFFER_RESIDE_CPU,
+        .size=sizeof(push_constants),
+        .data=&constants,
+    };
+
+    if(!dm_renderer_create_buffer(&context, push_desc, &push_data_cpu)) return 1;
+
+    push_desc.reside = DM_BUFFER_RESIDE_GPU;
+    push_desc.data   = NULL;
+
+    if(!dm_renderer_create_buffer(&context, push_desc, &push_data_gpu)) return 1;
+
+    // random texture
     texture = create_texture(&context, "../../assets/textures/awesomeface.png");
     if(texture.r_type==DM_RESOURCE_TYPE_INVALID) return 1;
 
-    push_constants constants = { 
-        .vb_address=dm_renderer_get_buffer_address(&context, vb_gpu)
-    };
+    // descriptors
+    if(!dm_renderer_upload_resource_to_heap(&context, heap, vb_gpu))  return 1;
+    if(!dm_renderer_upload_resource_to_heap(&context, heap, ib_gpu))  return 1;
+    if(!dm_renderer_upload_resource_to_heap(&context, heap, texture)) return 1;
+
+    /*
+     */
+    constants.vb_address=dm_renderer_get_buffer_address(&context, vb_gpu);
 
     // main loop
     while(dm_is_running(context))
@@ -139,20 +182,15 @@ int main(void)
 
         constants.t += 0.005f;
 
-#if 0
-        vertices[0].pos[0] += constants.t;
-        vertices[1].pos[0] += constants.t;
-        vertices[2].pos[0] += constants.t;
-        
-        dm_render_command_update_buffer(&context, vb_cpu, vertices, sizeof(vertices));
-        dm_render_command_copy_buffer(&context, vb_cpu, vb_gpu);
-#endif
+        dm_render_command_update_buffer(&context, push_data_cpu, &constants, sizeof(constants));
+        dm_render_command_copy_buffer(&context, push_data_cpu, push_data_gpu);
 
         if(!dm_begin_render(&context)) break;
+            dm_render_command_bind_descriptor_heap(&context, heap);
 
             dm_render_command_begin_rendering(&context, swapchain, 0.1f, 0.1f, 0.5f, 1, 1);
                 dm_render_command_bind_pipeline(&context, pipe);
-                dm_render_command_push_constants(&context, pipe, &constants, sizeof(constants));
+                dm_render_command_push_constants(&context, push_data_gpu);
                 dm_render_command_bind_index_buffer(&context, ib_gpu, 0);
                 dm_render_command_draw(&context, 3, 1); 
             dm_render_command_end_rendering(&context, swapchain);
