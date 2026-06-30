@@ -13,23 +13,32 @@ struct vertex
     vec3 color;
 };
 
-layout (descriptor_heap) buffer vertexBuffer 
+layout (descriptor_heap) buffer vbheap
 {
-    vertex v;
-} vertices[];
+    vertex vertices[];
+} vertex_buffer_heap[];
+
+layout (buffer_reference) readonly buffer push_refernce
+{
+    uint  vb_index;
+    float t;
+} indices;
 
 layout (push_constant) uniform push_constants
 {
-    uint64_t vertex_address;
-    float    t;
+    push_refernce ref; 
 } constants;
 
 void main()
 {
-    vertex v = vertices[nonuniformEXT(gl_VertexIndex)].v;
+    push_refernce ref = constants.ref;
+
+    uint index = 0;
+    index = ref.vb_index;
+    vertex v = vertex_buffer_heap[nonuniformEXT(index)].vertices[nonuniformEXT(gl_VertexIndex)];
 
     vec3 position = v.position;
-    position.x += constants.t;
+    position.x += ref.t;
 
     vec3 color    = v.color; 
 
