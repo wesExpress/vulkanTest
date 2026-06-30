@@ -8,8 +8,8 @@
 
 typedef struct vertex_t
 {
-    float pos[3];
-    float color[3];
+    float pos[4];
+    float color[4];
 } vertex;
 
 typedef struct push_constants_t

@@ -9,8 +9,8 @@ layout(location=0) out vec3 vertex_color;
 
 struct vertex
 {
-    vec3 position;
-    vec3 color;
+    vec4 position;
+    vec4 color;
 };
 
 layout (descriptor_heap) buffer vbheap
@@ -37,10 +37,10 @@ void main()
     index = ref.vb_index;
     vertex v = vertex_buffer_heap[nonuniformEXT(index)].vertices[nonuniformEXT(gl_VertexIndex)];
 
-    vec3 position = v.position;
+    vec3 position = v.position.xyz;
     position.x += ref.t;
 
-    vec3 color    = v.color; 
+    vec3 color    = v.color.rgb; 
 
     gl_Position = vec4(position, 1.f);
     vertex_color = color;
