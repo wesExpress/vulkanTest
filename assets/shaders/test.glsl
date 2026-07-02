@@ -11,9 +11,9 @@ struct vertex
     vec4 color;
 };
 
-layout (descriptor_heap) readonly buffer vertex_buffer
+layout (descriptor_heap) readonly buffer vertex_ptr
 {
-    vertex vertices[];
+    vertex vertex_buffer[];
 } vb_heap[];
 
 layout (buffer_reference) readonly buffer constants 
@@ -31,15 +31,15 @@ layout (push_constant, scalar) uniform push_reference
 {
     //constants c;
     vertices v;
+    uint vb_index;
 } reference;
 
 layout(location=0) out vec3 vertex_color;
 
 void main()
 {
-    //constants c = reference.c;
-
-    //vertex v = vb_heap[c.index].vertices[gl_VertexIndex];
+    //constants c = constants(reference.c);
+    //vertex v = vb_heap[reference.vb_index].vertex_buffer[gl_VertexIndex];
     vertices vb = vertices(reference.v);
     vertex v = vb.vertex_buffer[gl_VertexIndex];
 
@@ -48,5 +48,6 @@ void main()
 
     gl_Position = vec4(position,1);
 
-    vertex_color = v.color.rgb;
+    //vertex_color = v.color.rgb;
+    vertex_color = vec3(reference.vb_index, 1,0);
 }
