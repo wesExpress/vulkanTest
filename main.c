@@ -195,7 +195,8 @@ int main(void)
     dm_render_command_copy_buffer(&context, push_data_cpu, push_data_gpu);
 
     push_data push = {
-        .address=dm_renderer_get_buffer_address(&context, push_data_gpu)
+        //.address=dm_renderer_get_buffer_address(&context, push_data_gpu)
+        .address=dm_renderer_get_buffer_address(&context, vb_gpu)
     };
 
     // main loop
