@@ -2,6 +2,7 @@
 
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_nonuniform_qualifier : require
 
 struct vertex
@@ -12,30 +13,30 @@ struct vertex
 
 layout (descriptor_heap) readonly buffer vertex_buffer
 {
-    vertex vertices[];
+    vertex vertices[3];
 } vb_heap[];
 
-layout (buffer_reference) readonly buffer reference
+layout (buffer_reference) readonly buffer constants 
 {
     uint index;
     float t;
 };
 
-layout (push_constant) uniform push_constants 
+layout (push_constant, scalar) uniform push_reference
 {
-    reference r;
-} constants;
+    constants c;
+} reference;
 
 layout(location=0) out vec3 vertex_color;
 
 void main()
 {
-    reference r = constants.r;
+    constants c = reference.c;
 
-    vertex v = vb_heap[r.index].vertices[gl_VertexIndex];
+    vertex v = vb_heap[c.index].vertices[gl_VertexIndex];
 
     vec3 position = v.position.xyz;
-    position.x += r.t;
+    position.x += c.t;
 
     gl_Position = vec4(position,1);
 

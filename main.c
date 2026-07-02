@@ -18,6 +18,11 @@ typedef struct push_constants_t
     float t;
 } push_constants;
 
+typedef struct push_data_t
+{
+    u64 address;
+} push_data;
+
 dm_handle create_texture(dm_context *context, const char *path)
 {
     dm_handle handle = { 0 };
@@ -179,8 +184,8 @@ int main(void)
 
     // descriptors
     if(!dm_renderer_upload_resource_to_heap(&context, heap, &vb_gpu))  return 1;
-    //if(!dm_renderer_upload_resource_to_heap(&context, heap, &ib_gpu))  return 1;
-    //if(!dm_renderer_upload_resource_to_heap(&context, heap, &texture)) return 1;
+    if(!dm_renderer_upload_resource_to_heap(&context, heap, &ib_gpu))  return 1;
+    if(!dm_renderer_upload_resource_to_heap(&context, heap, &texture)) return 1;
 
     /*
      */
@@ -188,6 +193,10 @@ int main(void)
 
     dm_render_command_update_buffer(&context, push_data_cpu, &constants, sizeof(constants));
     dm_render_command_copy_buffer(&context, push_data_cpu, push_data_gpu);
+
+    push_data push = {
+        .address=dm_renderer_get_buffer_address(&context, push_data_gpu)
+    };
 
     // main loop
     while(dm_is_running(context))
@@ -203,7 +212,7 @@ int main(void)
             dm_render_command_bind_descriptor_heap(&context, heap);
 
             dm_render_command_begin_rendering(&context, swapchain, 0.1f, 0.1f, 0.5f, 1, 1);
-                dm_render_command_push_constants(&context, push_data_gpu);
+                dm_render_command_push_data(&context, &push, sizeof(push));
                 dm_render_command_bind_pipeline(&context, pipe);
                 dm_render_command_bind_index_buffer(&context, ib_gpu, 0);
                 dm_render_command_draw(&context, 3, 1); 

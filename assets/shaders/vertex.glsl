@@ -2,7 +2,7 @@
 
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_descriptor_heap : require
-#extension GL_EXT_nonuniform_qualifier : require
+//#extension GL_EXT_nonuniform_qualifier : require
 
 layout(location=0) out vec3 vertex_color;
 
@@ -26,6 +26,7 @@ layout (buffer_reference) readonly buffer push_refernce
 layout (push_constant) uniform push_constants
 {
     push_refernce ref; 
+    vec3 color[];
 } constants;
 
 void main()
