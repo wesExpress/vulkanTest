@@ -59,9 +59,6 @@ int main(void)
 
     push_constants constants = { 0 };
 
-    dm_handle test;
-    if(!dm_renderer_create_compute_pipeline(&context, &test)) return 1;
-
     // render target
     dm_render_target_desc desc = {
         .type=DM_RENDER_TARGET_TYPE_SWAPCHAIN,
@@ -99,7 +96,7 @@ int main(void)
 
     // raster pipe
     dm_raster_shader vertex_shader = {
-        .path="../../assets/shaders/vertex.glsl",
+        .path="../../assets/shaders/test.glsl",
         .entry="main"
     };
     dm_raster_shader fragment_shader = {
