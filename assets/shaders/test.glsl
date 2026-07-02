@@ -10,10 +10,10 @@ struct vertex
     vec4 color;
 };
 
-layout (descriptor_heap) buffer test
+layout (descriptor_heap) readonly buffer vertex_buffer
 {
     vertex vertices[];
-} heap[];
+} vb_heap[];
 
 layout (buffer_reference) readonly buffer reference
 {
@@ -32,7 +32,7 @@ void main()
 {
     reference r = constants.r;
 
-    vertex v = heap[nonuniformEXT(r.index)].vertices[gl_VertexIndex];
+    vertex v = vb_heap[r.index].vertices[gl_VertexIndex];
 
     vec3 position = v.position.xyz;
     position.x += r.t;

@@ -59,6 +59,9 @@ int main(void)
 
     push_constants constants = { 0 };
 
+    dm_handle test = { 0 };
+    //if(!dm_renderer_create_compute_pipeline(&context, &test)) return 1; 
+
     // render target
     dm_render_target_desc desc = {
         .type=DM_RENDER_TARGET_TYPE_SWAPCHAIN,
